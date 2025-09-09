@@ -1,0 +1,385 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Accounts & Events
+model IntegrationSource {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  status      String   @default("active")
+  lastSyncAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("integration_source")
+}
+
+model WebhookEvent {
+  id          String   @id @default(cuid())
+  source      String
+  eventType   String
+  payloadJson Json
+  receivedAt  DateTime @default(now())
+  processedAt DateTime?
+  status      String   @default("pending")
+  error       String?
+
+  @@map("webhook_event")
+}
+
+// Portfolio
+model Unit {
+  id           String   @id @default(cuid())
+  externalIds  Json     @default("{}")
+  unitCode     String   @unique
+  unitName     String
+  bedrooms     Int
+  bathrooms    Float
+  sleeps       Int
+  address      String
+  lat          Float?
+  lon          Float?
+  mgmtModel    String?
+  market       String
+  microMarket  String?
+  active       Boolean  @default(true)
+  tags         String[] @default([])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  sourceUpdatedAt DateTime?
+
+  // Relations
+  listings            Listing[]
+  calendarDays        CalendarDay[]
+  reservations        Reservation[]
+  pricingSettings     PricingSettings[]
+  tasks               Task[]
+  issues              Issue[]
+  kpiSnapshots        KpiSnapshotDaily[]
+  otaMetrics          OtaMetricsDaily[]
+  agentRecommendations AgentRecommendation[]
+  playbooks           Playbook[]
+
+  @@map("unit")
+}
+
+model Listing {
+  id                String   @id @default(cuid())
+  unitId            String
+  ota               String
+  listingId         String
+  status            String
+  title             String?
+  description       String?
+  amenitiesJson     Json?
+  photosJson        Json?
+  minStay           Int?
+  maxStay           Int?
+  cleaningFee       Float?
+  taxProfileJson    Json?
+  cancellationPolicy String?
+  bookingWindow     Int?
+  leadTimeDaysMedian Int?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  sourceUpdatedAt   DateTime?
+
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([unitId, ota])
+  @@map("listing")
+}
+
+model CalendarDay {
+  id            String   @id @default(cuid())
+  unitId        String
+  date          DateTime @db.Date
+  available     Boolean
+  minPrice      Float?
+  maxPrice      Float?
+  basePrice     Float?
+  blockedReason String?
+  source        String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  sourceUpdatedAt DateTime?
+
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([unitId, date])
+  @@map("calendar_day")
+}
+
+model Reservation {
+  id                String   @id @default(cuid())
+  unitId            String
+  source            String
+  externalId        String
+  status            String
+  checkIn           DateTime @db.Date
+  checkOut          DateTime @db.Date
+  nights            Int
+  guests            Int
+  adr               Float
+  totalPayout       Float
+  hostFee           Float?
+  taxes             Float?
+  cleaningFee       Float?
+  createdAtExt      DateTime?
+  updatedAtExt      DateTime?
+  cancellationReason String?
+  leadTimeDays      Int?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  sourceUpdatedAt   DateTime?
+
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([unitId, externalId])
+  @@map("reservation")
+}
+
+model PricingSettings {
+  id            String   @id @default(cuid())
+  unitId        String
+  basePrice     Float
+  minPrice      Float
+  maxPrice      Float
+  discountsJson Json?
+  overridesJson Json?
+  source        String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  sourceUpdatedAt DateTime?
+
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@map("pricing_settings")
+}
+
+// Ops
+model Task {
+  id          String   @id @default(cuid())
+  unitId      String?
+  type        String
+  status      String   @default("todo")
+  dueAt       DateTime?
+  assignedTo  String?
+  createdBy   String?
+  detailsJson Json?
+  source      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  unit Unit? @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@map("task")
+}
+
+model Issue {
+  id          String   @id @default(cuid())
+  unitId      String
+  severity    String
+  status      String   @default("open")
+  openedAt    DateTime @default(now())
+  resolvedAt  DateTime?
+  description String
+  attachments String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@map("issue")
+}
+
+// Analytics & Agents
+model KpiSnapshotDaily {
+  id              String   @id @default(cuid())
+  unitId          String
+  date            DateTime @db.Date
+  occ             Float?
+  adr             Float?
+  revpar          Float?
+  revenue         Float?
+  pacingVsTarget  Float?
+  targetOcc       Float?
+  targetAdr       Float?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([unitId, date])
+  @@map("kpi_snapshot_daily")
+}
+
+model EventCalendar {
+  id            String   @id @default(cuid())
+  market        String
+  date          DateTime @db.Date
+  name          String
+  demandImpact  String?
+  notes         String?
+  source        String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("event_calendar")
+}
+
+model OtaMetricsDaily {
+  id             String   @id @default(cuid())
+  unitId         String
+  ota            String
+  date           DateTime @db.Date
+  views          Int?
+  clicks         Int?
+  conversionRate Float?
+  searchRank     Int?
+  wishlists      Int?
+  pagePosition   Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([unitId, ota, date])
+  @@map("ota_metrics_daily")
+}
+
+model AgentRecommendation {
+  id                String   @id @default(cuid())
+  scope             String
+  unitId            String?
+  module            String
+  title             String
+  bodyMd            String
+  recommendationJson Json?
+  confidence        Float
+  status            String   @default("open")
+  createdByAgentId  String
+  appliedByUserId   String?
+  appliedAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  unit Unit? @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@map("agent_recommendation")
+}
+
+model AgentActionLog {
+  id          String   @id @default(cuid())
+  actorType   String
+  actorId     String
+  action      String
+  payloadJson Json?
+  result      String?
+  contextRef  String?
+  createdAt   DateTime @default(now())
+
+  @@map("agent_action_log")
+}
+
+// Knowledge & Playbooks
+model Playbook {
+  id        String   @id @default(cuid())
+  scope     String
+  unitId    String?
+  module    String?
+  title     String
+  bodyMd    String
+  version   Int      @default(1)
+  status    String   @default("draft")
+  tags      String[] @default([])
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  unit Unit? @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  taskTemplates PlaybookTaskTemplate[]
+
+  @@map("playbook")
+}
+
+model PlaybookTaskTemplate {
+  id              String   @id @default(cuid())
+  playbookId      String
+  title           String
+  instructionsMd  String
+  checklistJson   Json?
+  assigneeRole    String?
+  canAutorun      Boolean  @default(false)
+  agentTriggerRef String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  playbook Playbook @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+
+  @@map("playbook_task_template")
+}
+
+// User Management
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  role      String   @default("Analyst")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("user")
+}
+
+// API Keys
+model ApiKey {
+  id          String   @id @default(cuid())
+  name        String
+  keyHash     String   @unique
+  scope       String
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("api_key")
+}
+
+// Configuration
+model AppConfig {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("app_config")
+}
+
+// Rent Data for Pricing Floors
+model RentData {
+  id           String   @id @default(cuid())
+  unitId       String?
+  unitCode     String?
+  monthlyRent  Float
+  flatOpex     Float    @default(700)
+  expectedOcc  Float    @default(75)
+  targetMargin Float    @default(10)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([unitCode])
+  @@map("rent_data")
+}
