@@ -1,239 +1,332 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { webhookSecurity } from '@/lib/webhook-security';
 import { prisma } from '@/lib/prisma';
-import crypto from 'crypto';
+
+// Rate limiting and queue management
+const requestQueue: Array<() => Promise<void>> = [];
+let activeRequests = 0;
+const MAX_CONCURRENT_REQUESTS = 15;
+const rateLimitStats = {
+  last429Count: 0,
+  last429Reset: Date.now(),
+};
+
+async function processQueue() {
+  if (activeRequests >= MAX_CONCURRENT_REQUESTS || requestQueue.length === 0) {
+    return;
+  }
+
+  const task = requestQueue.shift();
+  if (task) {
+    activeRequests++;
+    try {
+      await task();
+    } finally {
+      activeRequests--;
+      // Process next item in queue
+      setTimeout(processQueue, 100);
+    }
+  }
+}
+
+async function queueRequest<T>(fn: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    requestQueue.push(async () => {
+      try {
+        const result = await fn();
+        resolve(result);
+      } catch (error) {
+        reject(error);
+      }
+    });
+    processQueue();
+  });
+}
 
 export async function POST(request: NextRequest) {
   try {
+    // Read raw body for signature verification
     const body = await request.text();
-    const signature = request.headers.get('X-Guesty-Signature');
+    const signature = request.headers.get('X-Guesty-Signature') || '';
     
-    // Parse JSON payload
     let payload;
     try {
       payload = JSON.parse(body);
     } catch (error) {
-      return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
+      console.error('Invalid JSON payload:', error);
+      return NextResponse.json(
+        { error: 'Invalid JSON payload' },
+        { status: 400 }
+      );
     }
 
-    // Get webhook secret from config (in real app, from database)
-    const webhookSecret = process.env.GUESTY_WEBHOOK_SECRET;
-    
-    // Verify signature if secret is configured
-    if (webhookSecret && signature) {
-      const expectedSignature = crypto
-        .createHmac('sha256', webhookSecret)
-        .update(body)
-        .digest('hex');
-      
-      if (signature !== `sha256=${expectedSignature}`) {
-        return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
-      }
-    }
+    // Extract event details
+    const eventId = payload.id || payload.eventId || `${Date.now()}-${Math.random()}`;
+    const eventType = payload.type || payload.eventType || 'unknown';
 
-    // Store webhook event
-    const webhookEvent = await prisma.webhookEvent.create({
-      data: {
-        source: 'guesty',
-        eventType: payload.type || 'unknown',
-        payloadJson: payload,
-        status: 'received'
-      }
+    // Get admin user for webhook verification (in production, this would be more sophisticated)
+    const adminUser = await prisma.user.findFirst({
+      where: { role: 'Admin' },
+      select: { id: true },
     });
 
-    // Process webhook based on event type
-    await processGuestyWebhook(payload, webhookEvent.id);
+    if (!adminUser) {
+      console.error('No admin user found for webhook verification');
+      return NextResponse.json(
+        { error: 'Configuration error' },
+        { status: 500 }
+      );
+    }
+
+    // Process webhook with security verification
+    const result = await webhookSecurity.processWebhook(
+      eventId,
+      eventType,
+      payload,
+      signature,
+      adminUser.id
+    );
+
+    if (!result.success) {
+      console.error('Webhook verification failed:', result.error);
+      return NextResponse.json(
+        { error: result.error },
+        { status: 400 }
+      );
+    }
+
+    // Queue the actual processing to respect rate limits
+    await queueRequest(async () => {
+      await processGuestyEvent(eventType, payload, result.webhookEventId);
+    });
 
     return NextResponse.json({ 
       success: true, 
-      eventId: webhookEvent.id 
+      eventId: result.webhookEventId 
     });
 
   } catch (error) {
     console.error('Webhook processing error:', error);
-    return NextResponse.json({ 
-      error: 'Internal server error' 
-    }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
 
-async function processGuestyWebhook(payload: any, eventId: string) {
+async function processGuestyEvent(eventType: string, payload: any, webhookEventId: string) {
   try {
-    const eventType = payload.type;
-    
+    console.log(`Processing Guesty event: ${eventType}`);
+
     switch (eventType) {
       case 'reservation.created':
       case 'reservation.updated':
-        await processReservationEvent(payload.data);
-        break;
       case 'reservation.cancelled':
-        await processCancellationEvent(payload.data);
+        await processReservationEvent(payload);
         break;
+      
       case 'listing.updated':
-        await processListingEvent(payload.data);
+        await processListingEvent(payload);
         break;
-      case 'calendar.updated':
-        await processCalendarEvent(payload.data);
+      
+      case 'listing.calendar.updated':
+        await processCalendarEvent(payload);
         break;
-      case 'pricing.updated':
-        await processPricingEvent(payload.data);
-        break;
+      
       default:
         console.log(`Unhandled event type: ${eventType}`);
     }
 
-    // Mark event as processed
+    // Mark webhook as processed
     await prisma.webhookEvent.update({
-      where: { id: eventId },
+      where: { id: webhookEventId },
       data: { 
-        status: 'processed',
-        processedAt: new Date()
-      }
+        processed: true, 
+        processedAt: new Date() 
+      },
     });
 
   } catch (error) {
-    console.error('Webhook processing error:', error);
+    console.error(`Error processing ${eventType}:`, error);
     
-    // Mark event as failed
+    // Mark webhook as failed
     await prisma.webhookEvent.update({
-      where: { id: eventId },
+      where: { id: webhookEventId },
       data: { 
-        status: 'failed',
-        error: error instanceof Error ? error.message : 'Unknown error'
-      }
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      },
     });
   }
 }
 
-async function processReservationEvent(data: any) {
-  const unitId = await findUnitByGuestyId(data.listingId);
-  if (!unitId) return;
-
-  const reservationData = {
-    unitId,
-    source: 'guesty',
-    externalId: data._id,
-    status: data.status,
-    checkIn: new Date(data.checkInDateLocalized),
-    checkOut: new Date(data.checkOutDateLocalized),
-    nights: data.nightsCount,
-    guests: data.guestsCount,
-    adr: data.money.hostPayout / data.nightsCount,
-    totalPayout: data.money.hostPayout,
-    hostFee: data.money.hostServiceFee,
-    taxes: data.money.tax,
-    cleaningFee: data.money.cleaningFee,
-    createdAtExt: new Date(data.createdAt),
-    updatedAtExt: new Date(data.lastUpdatedAt),
-    leadTimeDays: Math.floor((new Date(data.checkInDateLocalized).getTime() - new Date(data.createdAt).getTime()) / (1000 * 60 * 60 * 24)),
-    sourceUpdatedAt: new Date()
-  };
-
-  await prisma.reservation.upsert({
-    where: { unitId_externalId: { unitId, externalId: data._id } },
-    update: reservationData,
-    create: reservationData
-  });
-}
-
-async function processCancellationEvent(data: any) {
-  const unitId = await findUnitByGuestyId(data.listingId);
-  if (!unitId) return;
-
-  await prisma.reservation.updateMany({
-    where: { 
-      unitId,
-      externalId: data._id 
-    },
-    data: { 
-      status: 'cancelled',
-      cancellationReason: data.cancellationReason,
-      sourceUpdatedAt: new Date()
-    }
-  });
-}
-
-async function processListingEvent(data: any) {
-  const unitId = await findUnitByGuestyId(data._id);
-  if (!unitId) return;
-
-  const listingData = {
-    unitId,
-    ota: data.platform || 'guesty',
-    listingId: data._id,
-    status: data.status,
-    title: data.title,
-    description: data.publicDescription?.summary,
-    amenitiesJson: data.amenities || {},
-    photosJson: data.pictures || {},
-    minStay: data.terms?.minNights,
-    maxStay: data.terms?.maxNights,
-    cleaningFee: data.prices?.cleaningFee,
-    taxProfileJson: data.taxes || {},
-    cancellationPolicy: data.terms?.cancellation,
-    sourceUpdatedAt: new Date()
-  };
-
-  await prisma.listing.upsert({
-    where: { unitId_ota: { unitId, ota: data.platform || 'guesty' } },
-    update: listingData,
-    create: listingData
-  });
-}
-
-async function processCalendarEvent(data: any) {
-  const unitId = await findUnitByGuestyId(data.listingId);
-  if (!unitId) return;
-
-  for (const day of data.days || []) {
-    const calendarData = {
-      unitId,
-      date: new Date(day.date),
-      available: day.status === 'available',
-      minPrice: day.price?.minimum,
-      maxPrice: day.price?.maximum,
-      basePrice: day.price?.base,
-      blockedReason: day.status !== 'available' ? day.status : null,
-      source: 'guesty',
-      sourceUpdatedAt: new Date()
-    };
-
-    await prisma.calendarDay.upsert({
-      where: { unitId_date: { unitId, date: new Date(day.date) } },
-      update: calendarData,
-      create: calendarData
-    });
-  }
-}
-
-async function processPricingEvent(data: any) {
-  const unitId = await findUnitByGuestyId(data.listingId);
-  if (!unitId) return;
-
-  const pricingData = {
-    unitId,
-    basePrice: data.basePrice,
-    minPrice: data.minPrice,
-    maxPrice: data.maxPrice,
-    discountsJson: data.discounts || {},
-    overridesJson: data.overrides || {},
-    source: 'guesty',
-    sourceUpdatedAt: new Date()
-  };
-
-  await prisma.pricingSettings.create({
-    data: pricingData
-  });
-}
-
-async function findUnitByGuestyId(guestyId: string): Promise<string | null> {
-  const unit = await prisma.unit.findFirst({
-    where: {
-      externalIds: {
-        path: ['guesty_id'],
-        equals: guestyId
-      }
-    }
-  });
+async function processReservationEvent(payload: any) {
+  const reservation = payload.reservation || payload;
   
-  return unit?.id || null;
+  // Find unit by Guesty listing ID
+  const listing = await prisma.listing.findFirst({
+    where: { listingId: reservation.listingId },
+    include: { unit: true },
+  });
+
+  if (!listing) {
+    console.warn(`No unit found for Guesty listing ${reservation.listingId}`);
+    return;
+  }
+
+  // Calculate derived fields
+  const checkIn = new Date(reservation.checkInDateLocalized);
+  const checkOut = new Date(reservation.checkOutDateLocalized);
+  const nights = Math.ceil((checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24));
+  const leadTimeDays = reservation.createdAt 
+    ? Math.ceil((checkIn.getTime() - new Date(reservation.createdAt).getTime()) / (1000 * 60 * 60 * 24))
+    : null;
+
+  // Upsert reservation (idempotent by external ID)
+  await prisma.reservation.upsert({
+    where: {
+      unitId_externalId: {
+        unitId: listing.unitId,
+        externalId: reservation._id,
+      },
+    },
+    update: {
+      status: reservation.status,
+      checkIn,
+      checkOut,
+      nights,
+      guests: reservation.guestsCount || 1,
+      adr: reservation.money?.hostPayout || 0,
+      totalPayout: reservation.money?.hostPayout || 0,
+      hostFee: reservation.money?.hostServiceFeeIncTax || 0,
+      taxes: reservation.money?.taxAmount || 0,
+      cleaningFee: reservation.money?.cleaningFee || 0,
+      updatedAtExt: reservation.lastUpdatedAt ? new Date(reservation.lastUpdatedAt) : null,
+      cancellationReason: reservation.cancellationReason,
+      leadTimeDays,
+      sourceUpdatedAt: new Date(),
+    },
+    create: {
+      unitId: listing.unitId,
+      source: 'guesty',
+      externalId: reservation._id,
+      status: reservation.status,
+      checkIn,
+      checkOut,
+      nights,
+      guests: reservation.guestsCount || 1,
+      adr: reservation.money?.hostPayout || 0,
+      totalPayout: reservation.money?.hostPayout || 0,
+      hostFee: reservation.money?.hostServiceFeeIncTax || 0,
+      taxes: reservation.money?.taxAmount || 0,
+      cleaningFee: reservation.money?.cleaningFee || 0,
+      createdAtExt: reservation.createdAt ? new Date(reservation.createdAt) : null,
+      updatedAtExt: reservation.lastUpdatedAt ? new Date(reservation.lastUpdatedAt) : null,
+      cancellationReason: reservation.cancellationReason,
+      leadTimeDays,
+      sourceUpdatedAt: new Date(),
+    },
+  });
+
+  console.log(`Processed reservation ${reservation._id} for unit ${listing.unit.unitCode}`);
+}
+
+async function processListingEvent(payload: any) {
+  const listing = payload.listing || payload;
+  
+  // Find unit by Guesty listing ID
+  const existingListing = await prisma.listing.findFirst({
+    where: { listingId: listing._id },
+    include: { unit: true },
+  });
+
+  if (!existingListing) {
+    console.warn(`No listing found for Guesty listing ${listing._id}`);
+    return;
+  }
+
+  // Upsert listing with version history
+  await prisma.listing.update({
+    where: { id: existingListing.id },
+    data: {
+      status: listing.status,
+      title: listing.title,
+      description: listing.publicDescription?.summary,
+      amenitiesJson: listing.amenities || {},
+      photosJson: listing.pictures || {},
+      minStay: listing.terms?.minNights,
+      maxStay: listing.terms?.maxNights,
+      cleaningFee: listing.prices?.cleaningFee,
+      taxProfileJson: listing.taxes || {},
+      cancellationPolicy: listing.terms?.cancellation,
+      bookingWindow: listing.terms?.advanceNotice,
+      sourceUpdatedAt: new Date(),
+    },
+  });
+
+  console.log(`Processed listing update for ${existingListing.unit.unitCode}`);
+}
+
+async function processCalendarEvent(payload: any) {
+  const calendarData = payload.calendar || payload;
+  const listingId = payload.listingId || calendarData.listingId;
+  
+  // Find unit by Guesty listing ID
+  const listing = await prisma.listing.findFirst({
+    where: { listingId },
+    include: { unit: true },
+  });
+
+  if (!listing) {
+    console.warn(`No unit found for Guesty listing ${listingId}`);
+    return;
+  }
+
+  // Process calendar days
+  if (calendarData.days && Array.isArray(calendarData.days)) {
+    for (const day of calendarData.days) {
+      const date = new Date(day.date);
+      
+      await prisma.calendarDay.upsert({
+        where: {
+          unitId_date: {
+            unitId: listing.unitId,
+            date,
+          },
+        },
+        update: {
+          available: day.status === 'available',
+          basePrice: day.price?.basePrice,
+          minPrice: day.price?.minPrice,
+          maxPrice: day.price?.maxPrice,
+          blockedReason: day.status !== 'available' ? day.status : null,
+          sourceUpdatedAt: new Date(),
+        },
+        create: {
+          unitId: listing.unitId,
+          date,
+          available: day.status === 'available',
+          basePrice: day.price?.basePrice,
+          minPrice: day.price?.minPrice,
+          maxPrice: day.price?.maxPrice,
+          blockedReason: day.status !== 'available' ? day.status : null,
+          source: 'guesty',
+          sourceUpdatedAt: new Date(),
+        },
+      });
+    }
+  }
+
+  console.log(`Processed calendar update for ${listing.unit.unitCode}`);
+}
+
+// Export rate limit stats for monitoring
+export async function GET() {
+  const stats = await webhookSecurity.getWebhookStats('admin');
+  
+  return NextResponse.json({
+    ...stats,
+    queueDepth: requestQueue.length,
+    activeRequests,
+    rateLimitStats,
+  });
 }

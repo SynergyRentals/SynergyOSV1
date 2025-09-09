@@ -24,14 +24,17 @@ model IntegrationSource {
 
 model WebhookEvent {
   id          String   @id @default(cuid())
-  source      String
+  eventId     String   @unique
   eventType   String
-  payloadJson Json
+  payload     Json
+  signature   String?
+  verified    Boolean  @default(false)
+  processed   Boolean  @default(false)
   receivedAt  DateTime @default(now())
   processedAt DateTime?
-  status      String   @default("pending")
   error       String?
 
+  @@index([receivedAt])
   @@map("webhook_event")
 }
 
@@ -329,13 +332,21 @@ model PlaybookTaskTemplate {
   @@map("playbook_task_template")
 }
 
-// User Management
+// User Management with OAuth2 fields
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
   name      String?
   role      String   @default("Analyst")
   active    Boolean  @default(true)
+  
+  // Guesty OAuth2 fields
+  guestyClientId     String?
+  guestyClientSecret String?
+  guestyAccessToken  String?
+  guestyTokenExpiresAt DateTime?
+  guestyWebhookSecret String?
+  
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
