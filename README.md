@@ -1,36 +1,128 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Synergy OS - Rental Management Platform
 
-## Getting Started
+A comprehensive single-tenant rental management platform built for Synergy Rentals Group.
 
-First, run the development server:
+## 🏗️ Architecture
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- **Next.js 14** with App Router and TypeScript
+- **Prisma ORM** with PostgreSQL database
+- **shadcn/ui** components with Tailwind CSS
+- **Responsive design** with mobile-friendly navigation
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 🚀 Features
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Core Platform
+- **Post-Setup Checklist** - Interactive onboarding flow
+- **Portfolio Dashboard** - KPIs, occupancy trends, channel mix
+- **Units Management** - Property portfolio with filtering and health scores
+- **Admin Panel** - Complete system configuration
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### API Integrations
+- **Guesty** - Primary PMS integration with webhook handling
+- **Wheelhouse** - Dynamic pricing data ingestion
+- **OTA Metrics** - Performance tracking across platforms
+- **SuiteOp** - Task management integration
+- **Conduit** - Message summarization
 
-## Learn More
+### Database Schema
+- Units, Listings, Reservations, Calendar Days
+- OTA Metrics, Agent Recommendations, Playbooks
+- KPI Snapshots, Tasks, Issues, Rent Data
+- User management with role-based permissions
 
-To learn more about Next.js, take a look at the following resources:
+## 🛠️ Setup
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/SynergyRentals/SynergyOSV1.git
+   cd SynergyOSV1
+   ```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+2. **Install dependencies**
+   ```bash
+   bun install
+   ```
 
-## Deploy on Vercel
+3. **Set up environment variables**
+   ```bash
+   cp .env.example .env
+   ```
+   
+   Configure your `.env` file with:
+   ```
+   DATABASE_URL="postgresql://username:password@localhost:5432/synergy_os"
+   GUESTY_WEBHOOK_SECRET="your-webhook-secret"
+   WHEELHOUSE_API_KEY="your-wheelhouse-key"
+   OTA_SCRAPER_API_KEY="your-ota-scraper-key"
+   SUITEOP_API_KEY="your-suiteop-key"
+   CONDUIT_API_KEY="your-conduit-key"
+   ```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+4. **Set up the database**
+   ```bash
+   # Create database
+   createdb synergy_os
+   
+   # Run migrations
+   bun prisma migrate dev
+   
+   # Seed with sample data
+   bun prisma db seed
+   ```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+5. **Start the development server**
+   ```bash
+   bun dev
+   ```
+
+## 📊 Sample Data
+
+The application comes pre-seeded with sample data for 3 St. Louis properties:
+- **TG-001** - Tower Grove Loft (1BR/1BA)
+- **SL-002** - Soulard Townhouse (2BR/2BA) 
+- **CWE-003** - Central West End Penthouse (3BR/2.5BA)
+
+## 🔌 API Endpoints
+
+### Webhooks
+- `POST /api/webhooks/guesty` - Guesty event processing
+
+### Data Ingestion
+- `POST /api/ingest/wheelhouse/unit_pricing` - Pricing updates
+- `POST /api/ingest/ota/metrics` - OTA performance data
+- `POST /api/ingest/suiteop/tasks` - Task management sync
+- `POST /api/ingest/conduit/messages_summary` - Message summaries
+
+### Agent System
+- `GET/POST /api/agents/recommendations` - AI recommendations
+- `GET /api/agents/kpis` - Performance metrics
+- `POST /api/agents/action_logs` - Action tracking
+
+## 🎨 UI Components
+
+Built with shadcn/ui components including:
+- Dashboard with KPI cards and charts
+- Data tables with filtering and sorting
+- Forms with validation
+- Navigation with responsive sidebar
+- Admin panels with tabbed interfaces
+
+## 🔐 Authentication & Permissions
+
+- Role-based access control (Admin, Analyst, Operations)
+- API key management for external integrations
+- Webhook signature verification
+
+## 🚀 Deployment
+
+The application is deployed at: https://synergy-os-dev.lindy.site
+
+For production deployment:
+1. Set up PostgreSQL database
+2. Configure environment variables
+3. Run database migrations
+4. Deploy to your preferred platform (Vercel, Railway, etc.)
+
+## 📝 License
+
+Private repository for Synergy Rentals Group internal use.
